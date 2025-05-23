@@ -25,6 +25,8 @@
 
 PG_MODULE_MAGIC;
 
+// TODO - should this fail if PG_VERSION_NUM < 120000 ?
+
 /*
  * SQL functions
  */
@@ -237,13 +239,9 @@ blackhole_fdw_handler(PG_FUNCTION_ARGS) {
     /* Required by notations: S=SELECT I=INSERT U=UPDATE D=DELETE */
 
     /* these are required */
-#if (PG_VERSION_NUM >= 90200)
     fdwroutine->GetForeignRelSize = blackholeGetForeignRelSize; /* S U D */
     fdwroutine->GetForeignPaths = blackholeGetForeignPaths; /* S U D */
     fdwroutine->GetForeignPlan = blackholeGetForeignPlan; /* S U D */
-#else
-	fdwroutine->PlanForeignScan = blackholePlanForeignScan;     /* S */
-#endif
     fdwroutine->BeginForeignScan = blackholeBeginForeignScan; /* S U D */
     fdwroutine->IterateForeignScan = blackholeIterateForeignScan; /* S */
     fdwroutine->ReScanForeignScan = blackholeReScanForeignScan; /* S */
@@ -251,42 +249,74 @@ blackhole_fdw_handler(PG_FUNCTION_ARGS) {
 
     /* remainder are optional - use NULL if not required */
     /* support for insert / update / delete */
-#if (PG_VERSION_NUM >= 90300)
-    fdwroutine->IsForeignRelUpdatable = blackholeIsForeignRelUpdatable;
+
+    /* Functions for remote-join planning */
+    fdwroutine->GetForeignJoinPaths = blackholeGetForeignJoinPaths;
+
+    /* Functions for remote upper-relation (post scan/join) planning */
+    fdwroutine->GetForeignUpperPaths = NULL;
+
+    /* Functions for updating foreign tables */
     fdwroutine->AddForeignUpdateTargets = blackholeAddForeignUpdateTargets; /* U D */
+
+    fdwroutine->BeginForeignInsert = NULL;
+    fdwroutine->ExecForeignInsert = blackholeExecForeignInsert; /* I */
+    fdwroutine->ExecForeignBatchInsert = NULL;
+    fdwroutine->GetForeignModifyBatchSize  = NULL;
+    fdwroutine->EndForeignInsert = NULL;
+
     fdwroutine->PlanForeignModify = blackholePlanForeignModify; /* I U D */
     fdwroutine->BeginForeignModify = blackholeBeginForeignModify; /* I U D */
-    fdwroutine->ExecForeignInsert = blackholeExecForeignInsert; /* I */
     fdwroutine->ExecForeignUpdate = blackholeExecForeignUpdate; /* U */
     fdwroutine->ExecForeignDelete = blackholeExecForeignDelete; /* D */
     fdwroutine->EndForeignModify = blackholeEndForeignModify; /* I U D */
-#endif
 
-    /* support for EXPLAIN */
-    fdwroutine->ExplainForeignScan = blackholeExplainForeignScan; /* EXPLAIN S U D */
-#if (PG_VERSION_NUM >= 90300)
-    fdwroutine->ExplainForeignModify = blackholeExplainForeignModify; /* EXPLAIN I U D */
-#endif
+    fdwroutine->IsForeignRelUpdatable = blackholeIsForeignRelUpdatable;
 
-#if (PG_VERSION_NUM >= 90200)
-    /* support for ANALYSE */
-    fdwroutine->AnalyzeForeignTable = blackholeAnalyzeForeignTable; /* ANALYZE only */
-#endif
+    fdwroutine->PlanDirectModify = NULL;
+    fdwroutine->BeginDirectModify = NULL;
+    fdwroutine->IterateDirectModify = NULL;
+    fdwroutine->EndDirectModify = NULL;
 
-
-#if (PG_VERSION_NUM >= 90500)
-    /* Support functions for IMPORT FOREIGN SCHEMA */
-    fdwroutine->ImportForeignSchema = blackholeImportForeignSchema;
-
-    /* Support for scanning foreign joins */
-    fdwroutine->GetForeignJoinPaths = blackholeGetForeignJoinPaths;
-
-    /* Support for locking foreign rows */
+    /* Functions for SELECT FOR UPDATE/SHARE row locking */
     fdwroutine->GetForeignRowMarkType = blackholeGetForeignRowMarkType;
     fdwroutine->RefetchForeignRow = blackholeRefetchForeignRow;
+    fdwroutine->RecheckForeignScan = NULL;
 
+    /* Support functions for EXPLAIN */
+    fdwroutine->ExplainForeignScan = blackholeExplainForeignScan; /* EXPLAIN S U D */
+    fdwroutine->ExplainForeignModify = blackholeExplainForeignModify; /* EXPLAIN I U D */
+    fdwroutine->ExplainDirectModify = NULL;
+
+    /* Support functions for ANALYZE */
+    fdwroutine->AnalyzeForeignTable = blackholeAnalyzeForeignTable; /* ANALYZE only */
+
+    /* Support functions for IMPORT FOREIGN SCHEMA */
+    fdwroutine->ImportForeignSchema = blackholeImportForeignSchema; /* ANALYZE only */
+
+    /* Support functions for TRUNCATE */
+#if (PG_VERSION_NUM >= 14000)
+    fdwroutine->ExecForeignTruncate = NULL;
 #endif
 
+    /* Support functions for parallelism under Gather node */
+    fdwroutine->IsForeignScanParallelSafe = NULL;
+    fdwroutine->EstimateDSMForeignScan = NULL;
+    fdwroutine->InitializeDSMForeignScan = NULL;
+    fdwroutine->ReInitializeDSMForeignScan = NULL;
+    fdwroutine->InitializeWorkerForeignScan = NULL;
+    fdwroutine->ShutdownForeignScan = NULL;
+
+    /* Support functions for path reparameterization. */
+    fdwroutine->ReparameterizeForeignPathByChild = NULL;
+
+#if (PG_VERSION_NUM >= 14000)
+    /* Support functions for asynchronous execution */
+    fdwroutine->IsForeignPathAsyncCapable = NULL;
+    fdwroutine->ForeignAsyncRequest = NULL;
+    fdwroutine->ForeignAsyncConfigureWait = NULL;
+    fdwroutine->ForeignAsyncNotify = NULL;
+#endif
 
     PG_RETURN_POINTER(fdwroutine);
 }
