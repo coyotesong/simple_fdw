@@ -1,0 +1,5 @@
+# simple FDW
+comment = 'Simple Foreign Data Wrapper'
+default_version = '0.0.3'
+module_pathname = '$libdir/libsimple_fdw'
+relocatable = true
