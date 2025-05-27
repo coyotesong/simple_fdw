@@ -22,15 +22,15 @@ fi
 Newname=`perl -e "print qq(\\u$newname);"`
 
 
-grep --exclude-dir=.git --exclude=newname.sh -rl blackhole . | xargs sed -i -e "s/blackhole/$newname/g"
-grep --exclude-dir=.git --exclude=newname.sh -rl Blackhole . | xargs sed -i -e "s/Blackhole/$Newname/g"
+grep --exclude-dir=.git --exclude=newname.sh -rl simple . | xargs sed -i -e "s/simple/$newname/g"
+grep --exclude-dir=.git --exclude=newname.sh -rl Simple . | xargs sed -i -e "s/Simple/$Newname/g"
 
-mv blackhole_fdw.control ${newname}_fdw.control
-mv src/blackhole_fdw.c src/${newname}_fdw.c
-mv doc/blackhole_fdw.md doc/${newname}_fdw.md
-mv sql/blackhole_fdw.sql sql/${newname}_fdw.sql
-mv test/sql/blackhole.sql test/sql/${newname}.sql
-mv test/expected/blackhole.out test/expected/${newname}.out
+mv simple_fdw.control ${newname}_fdw.control
+mv src/simple_fdw.c src/${newname}_fdw.c
+mv doc/simple_fdw.md doc/${newname}_fdw.md
+mv sql/simple_fdw.sql sql/${newname}_fdw.sql
+mv test/sql/simple.sql test/sql/${newname}.sql
+mv test/expected/simple.out test/expected/${newname}.out
 
 
 

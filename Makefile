@@ -14,7 +14,7 @@
 ##############################################################################
 
 
-EXTENSION    = blackhole_fdw
+EXTENSION    = simple_fdw
 EXTVERSION   = $(shell grep default_version $(EXTENSION).control | sed -e "s/default_version[[:space:]]*=[[:space:]]*'\([^']*\)'/\1/")
 
 DATA         = $(filter-out $(wildcard sql/*--*.sql),$(wildcard sql/*.sql))
@@ -37,6 +37,9 @@ EXTRA_CLEAN = sql/$(EXTENSION)--$(EXTVERSION).sql
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+docker: Dockerfile
+	docker build -t simple:latest .
 
 # we put all the tests in a test subdir, but pgxs expects us not to, darn it
 override pg_regress_clean_files = test/results/ test/regression.diffs test/regression.out tmp_check/ log/

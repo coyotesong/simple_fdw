@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * Blackhole Foreign Data Wrapper for PostgreSQL
+ * Simple Foreign Data Wrapper for PostgreSQL
  *
  * Copyright (c) 2013 Andrew Dunstan
  *
@@ -9,7 +9,7 @@
  * Author: Andrew Dunstan <andrew@dunslane.net>
  *
  * IDENTIFICATION
- *		  blackhole_fdw/src/blackhole_fdw.c
+ *		  simple_fdw/src/simple_fdw.c
  *
  *-------------------------------------------------------------------------
  */
@@ -17,70 +17,65 @@
 #include "postgres.h"
 
 #include "access/reloptions.h"
+#include "commands/copy.h"
+#include "executor/executor.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
+#include "utils/rel.h"
+
+#include "simplefdw_api.h"
 
 PG_MODULE_MAGIC;
 
 // TODO - should this fail if PG_VERSION_NUM < 120000 ?
 
+//
+// initialization error?
+// SimpleFdwOps *simpleFdwOps = create_simple_fdw_blackhole_ops();
+//
+
 /*
  * SQL functions
  */
-extern Datum blackhole_fdw_handler(PG_FUNCTION_ARGS);
+extern Datum simple_fdw_handler(PG_FUNCTION_ARGS);
 
-extern Datum blackhole_fdw_validator(PG_FUNCTION_ARGS);
+extern Datum simple_fdw_validator(PG_FUNCTION_ARGS);
 
-PG_FUNCTION_INFO_V1(blackhole_fdw_handler);
-PG_FUNCTION_INFO_V1(blackhole_fdw_validator);
+PG_FUNCTION_INFO_V1(simple_fdw_handler);
+PG_FUNCTION_INFO_V1(simple_fdw_validator);
 
 
 /* callback functions */
-#if (PG_VERSION_NUM >= 90200)
-static void blackholeGetForeignRelSize(PlannerInfo *root,
+static void simpleGetForeignRelSize(PlannerInfo *root,
                                        RelOptInfo *baserel,
                                        Oid foreigntableid);
 
-static void blackholeGetForeignPaths(PlannerInfo *root,
+static void simpleGetForeignPaths(PlannerInfo *root,
                                      RelOptInfo *baserel,
                                      Oid foreigntableid);
 
-#if (PG_VERSION_NUM < 90500)
-static ForeignScan *blackholeGetForeignPlan(PlannerInfo *root,
-						RelOptInfo *baserel,
-						Oid foreigntableid,
-						ForeignPath *best_path,
-						List *tlist,
-						List *scan_clauses);
-#else
-static ForeignScan *blackholeGetForeignPlan(PlannerInfo *root,
-                                            RelOptInfo *baserel,
+static ForeignScan *simpleGetForeignPlan(PlannerInfo *root,
+                                            RelOptInfo *rel,
                                             Oid foreigntableid,
                                             ForeignPath *best_path,
                                             List *tlist,
-                                            List *scan_clauses,
+                                            List *restrictinfo_list,
                                             Plan *outer_plan
 );
-#endif
 
-#else /* 9.1 only */
-static FdwPlan *blackholePlanForeignScan(Oid foreigntableid, PlannerInfo *root, RelOptInfo *baserel);
-#endif
-
-static void blackholeBeginForeignScan(ForeignScanState *node,
+static void simpleBeginForeignScan(ForeignScanState *node,
                                       int eflags);
 
-static TupleTableSlot *blackholeIterateForeignScan(ForeignScanState *node);
+static TupleTableSlot *simpleIterateForeignScan(ForeignScanState *node);
 
-static void blackholeReScanForeignScan(ForeignScanState *node);
+static void simpleReScanForeignScan(ForeignScanState *node);
 
-static void blackholeEndForeignScan(ForeignScanState *node);
+static void simpleEndForeignScan(ForeignScanState *node);
 
-#if (PG_VERSION_NUM >= 90300)
-static void blackholeAddForeignUpdateTargets(
+static void simpleAddForeignUpdateTargets(
 #if (PG_VERSION_NUM >= 140000)
     PlannerInfo *root,
     Index rtindex,
@@ -90,142 +85,87 @@ static void blackholeAddForeignUpdateTargets(
     RangeTblEntry *target_rte,
     Relation target_relation);
 
-static List *blackholePlanForeignModify(PlannerInfo *root,
+static List *simplePlanForeignModify(PlannerInfo *root,
                                         ModifyTable *plan,
                                         Index resultRelation,
                                         int subplan_index);
 
-static void blackholeBeginForeignModify(ModifyTableState *mtstate,
+static void simpleBeginForeignModify(ModifyTableState *mtstate,
                                         ResultRelInfo *rinfo,
                                         List *fdw_private,
                                         int subplan_index,
                                         int eflags);
 
-static TupleTableSlot *blackholeExecForeignInsert(EState *estate,
+static TupleTableSlot *simpleExecForeignInsert(EState *estate,
                                                   ResultRelInfo *rinfo,
                                                   TupleTableSlot *slot,
                                                   TupleTableSlot *planSlot);
 
-static TupleTableSlot *blackholeExecForeignUpdate(EState *estate,
+static TupleTableSlot *simpleExecForeignUpdate(EState *estate,
                                                   ResultRelInfo *rinfo,
                                                   TupleTableSlot *slot,
                                                   TupleTableSlot *planSlot);
 
-static TupleTableSlot *blackholeExecForeignDelete(EState *estate,
+static TupleTableSlot *simpleExecForeignDelete(EState *estate,
                                                   ResultRelInfo *rinfo,
                                                   TupleTableSlot *slot,
                                                   TupleTableSlot *planSlot);
 
-static void blackholeEndForeignModify(EState *estate,
+static void simpleEndForeignModify(EState *estate,
                                       ResultRelInfo *rinfo);
 
-static int blackholeIsForeignRelUpdatable(Relation rel);
+static int simpleIsForeignRelUpdatable(Relation rel);
 
-#endif
-
-static void blackholeExplainForeignScan(ForeignScanState *node,
+static void simpleExplainForeignScan(ForeignScanState *node,
                                         struct ExplainState *es);
 
-#if (PG_VERSION_NUM >= 90300)
-static void blackholeExplainForeignModify(ModifyTableState *mtstate,
+static void simpleExplainForeignModify(ModifyTableState *mtstate,
                                           ResultRelInfo *rinfo,
                                           List *fdw_private,
                                           int subplan_index,
                                           struct ExplainState *es);
-#endif
 
-#if (PG_VERSION_NUM >= 90200)
-static bool blackholeAnalyzeForeignTable(Relation relation,
+static bool simpleAnalyzeForeignTable(Relation relation,
                                          AcquireSampleRowsFunc *func,
                                          BlockNumber *totalpages);
-#endif
 
-#if (PG_VERSION_NUM >= 90500)
-
-static void blackholeGetForeignJoinPaths(PlannerInfo *root,
+static void simpleGetForeignJoinPaths(PlannerInfo *root,
                                          RelOptInfo *joinrel,
                                          RelOptInfo *outerrel,
                                          RelOptInfo *innerrel,
                                          JoinType jointype,
                                          JoinPathExtraData *extra);
 
-
-static RowMarkType blackholeGetForeignRowMarkType(RangeTblEntry *rte,
+static RowMarkType simpleGetForeignRowMarkType(RangeTblEntry *rte,
                                                   LockClauseStrength strength);
 
 #if (PG_VERSION_NUM >= 120000)
-static void blackholeRefetchForeignRow(EState *estate,
+static void simpleRefetchForeignRow(EState *estate,
                                        ExecRowMark *erm,
                                        Datum rowid,
                                        TupleTableSlot *slot,
                                        bool *updated);
 #else
-static HeapTuple blackholeRefetchForeignRow(EState *estate,
+static HeapTuple simpleRefetchForeignRow(EState *estate,
 						   ExecRowMark *erm,
 						   Datum rowid,
 						   bool *updated);
 #endif
-static List *blackholeImportForeignSchema(ImportForeignSchemaStmt *stmt,
+static List *simpleImportForeignSchema(ImportForeignSchemaStmt *stmt,
                                           Oid serverOid);
-
-#endif
 
 /*
  * structures used by the FDW
  *
- * These next structures are not actually used by blackhole,but something like
+ * These next structures are not actually used by simple,but something like
  * them will be needed by anything more complicated that does actual work.
  */
 
-/*
- * Describes the valid options for objects that use this wrapper.
- */
-struct blackholeFdwOption {
-    const char *optname;
-    Oid optcontext; /* Oid of catalog in which option may appear */
-};
-
-/*
- * The plan state is set up in blackholeGetForeignRelSize and stashed away in
- * baserel->fdw_private and fetched in blackholeGetForeignPaths.
- */
-typedef struct {
-    char *foo;
-    int bar;
-} BlackholeFdwPlanState;
-
-/*
- * The scan state is for maintaining state for a scan, eiher for a
- * SELECT or UPDATE or DELETE.
- *
- * It is set up in blackholeBeginForeignScan and stashed in node->fdw_state
- * and subsequently used in blackholeIterateForeignScan,
- * blackholeEndForeignScan and blackholeReScanForeignScan.
- */
-typedef struct {
-    char *baz;
-    int blurfl;
-} BlackholeFdwScanState;
-
-/*
- * The modify state is for maintaining state of modify operations.
- *
- * It is set up in blackholeBeginForeignModify and stashed in
- * rinfo->ri_FdwState and subsequently used in blackholeExecForeignInsert,
- * blackholeExecForeignUpdate, blackholeExecForeignDelete and
- * blackholeEndForeignModify.
- */
-typedef struct {
-    char *chimp;
-    int chump;
-} BlackholeFdwModifyState;
-
-
 Datum
-blackhole_fdw_handler(PG_FUNCTION_ARGS) {
+simple_fdw_handler(PG_FUNCTION_ARGS) {
     FdwRoutine *fdwroutine = makeNode(FdwRoutine);
 
-    elog(DEBUG1, "entering function %s", __func__);
+    elog(NOTICE, "entering function %s", __func__);
 
     /*
      * assign the handlers for the FDW
@@ -239,39 +179,39 @@ blackhole_fdw_handler(PG_FUNCTION_ARGS) {
     /* Required by notations: S=SELECT I=INSERT U=UPDATE D=DELETE */
 
     /* these are required */
-    fdwroutine->GetForeignRelSize = blackholeGetForeignRelSize; /* S U D */
-    fdwroutine->GetForeignPaths = blackholeGetForeignPaths; /* S U D */
-    fdwroutine->GetForeignPlan = blackholeGetForeignPlan; /* S U D */
-    fdwroutine->BeginForeignScan = blackholeBeginForeignScan; /* S U D */
-    fdwroutine->IterateForeignScan = blackholeIterateForeignScan; /* S */
-    fdwroutine->ReScanForeignScan = blackholeReScanForeignScan; /* S */
-    fdwroutine->EndForeignScan = blackholeEndForeignScan; /* S U D */
+    fdwroutine->GetForeignRelSize = simpleGetForeignRelSize; /* S U D */
+    fdwroutine->GetForeignPaths = simpleGetForeignPaths; /* S U D */
+    fdwroutine->GetForeignPlan = simpleGetForeignPlan; /* S U D */
+    fdwroutine->BeginForeignScan = simpleBeginForeignScan; /* S U D */
+    fdwroutine->IterateForeignScan = simpleIterateForeignScan; /* S */
+    fdwroutine->ReScanForeignScan = simpleReScanForeignScan; /* S */
+    fdwroutine->EndForeignScan = simpleEndForeignScan; /* S U D */
 
     /* remainder are optional - use NULL if not required */
     /* support for insert / update / delete */
 
     /* Functions for remote-join planning */
-    fdwroutine->GetForeignJoinPaths = blackholeGetForeignJoinPaths;
+    fdwroutine->GetForeignJoinPaths = simpleGetForeignJoinPaths;
 
     /* Functions for remote upper-relation (post scan/join) planning */
     fdwroutine->GetForeignUpperPaths = NULL;
 
     /* Functions for updating foreign tables */
-    fdwroutine->AddForeignUpdateTargets = blackholeAddForeignUpdateTargets; /* U D */
+    fdwroutine->AddForeignUpdateTargets = simpleAddForeignUpdateTargets; /* U D */
 
     fdwroutine->BeginForeignInsert = NULL;
-    fdwroutine->ExecForeignInsert = blackholeExecForeignInsert; /* I */
+    fdwroutine->ExecForeignInsert = simpleExecForeignInsert; /* I */
     fdwroutine->ExecForeignBatchInsert = NULL;
     fdwroutine->GetForeignModifyBatchSize  = NULL;
     fdwroutine->EndForeignInsert = NULL;
 
-    fdwroutine->PlanForeignModify = blackholePlanForeignModify; /* I U D */
-    fdwroutine->BeginForeignModify = blackholeBeginForeignModify; /* I U D */
-    fdwroutine->ExecForeignUpdate = blackholeExecForeignUpdate; /* U */
-    fdwroutine->ExecForeignDelete = blackholeExecForeignDelete; /* D */
-    fdwroutine->EndForeignModify = blackholeEndForeignModify; /* I U D */
+    fdwroutine->PlanForeignModify = simplePlanForeignModify; /* I U D */
+    fdwroutine->BeginForeignModify = simpleBeginForeignModify; /* I U D */
+    fdwroutine->ExecForeignUpdate = simpleExecForeignUpdate; /* U */
+    fdwroutine->ExecForeignDelete = simpleExecForeignDelete; /* D */
+    fdwroutine->EndForeignModify = simpleEndForeignModify; /* I U D */
 
-    fdwroutine->IsForeignRelUpdatable = blackholeIsForeignRelUpdatable;
+    fdwroutine->IsForeignRelUpdatable = simpleIsForeignRelUpdatable;
 
     fdwroutine->PlanDirectModify = NULL;
     fdwroutine->BeginDirectModify = NULL;
@@ -279,20 +219,20 @@ blackhole_fdw_handler(PG_FUNCTION_ARGS) {
     fdwroutine->EndDirectModify = NULL;
 
     /* Functions for SELECT FOR UPDATE/SHARE row locking */
-    fdwroutine->GetForeignRowMarkType = blackholeGetForeignRowMarkType;
-    fdwroutine->RefetchForeignRow = blackholeRefetchForeignRow;
+    fdwroutine->GetForeignRowMarkType = simpleGetForeignRowMarkType;
+    fdwroutine->RefetchForeignRow = simpleRefetchForeignRow;
     fdwroutine->RecheckForeignScan = NULL;
 
     /* Support functions for EXPLAIN */
-    fdwroutine->ExplainForeignScan = blackholeExplainForeignScan; /* EXPLAIN S U D */
-    fdwroutine->ExplainForeignModify = blackholeExplainForeignModify; /* EXPLAIN I U D */
+    fdwroutine->ExplainForeignScan = simpleExplainForeignScan; /* EXPLAIN S U D */
+    fdwroutine->ExplainForeignModify = simpleExplainForeignModify; /* EXPLAIN I U D */
     fdwroutine->ExplainDirectModify = NULL;
 
     /* Support functions for ANALYZE */
-    fdwroutine->AnalyzeForeignTable = blackholeAnalyzeForeignTable; /* ANALYZE only */
+    fdwroutine->AnalyzeForeignTable = simpleAnalyzeForeignTable; /* ANALYZE only */
 
     /* Support functions for IMPORT FOREIGN SCHEMA */
-    fdwroutine->ImportForeignSchema = blackholeImportForeignSchema; /* ANALYZE only */
+    fdwroutine->ImportForeignSchema = simpleImportForeignSchema; /* ANALYZE only */
 
     /* Support functions for TRUNCATE */
 #if (PG_VERSION_NUM >= 14000)
@@ -322,10 +262,10 @@ blackhole_fdw_handler(PG_FUNCTION_ARGS) {
 }
 
 Datum
-blackhole_fdw_validator(PG_FUNCTION_ARGS) {
+simple_fdw_validator(PG_FUNCTION_ARGS) {
     List *options_list = untransformRelOptions(PG_GETARG_DATUM(0));
 
-    elog(DEBUG1, "entering function %s", __func__);
+    elog(NOTICE, "entering function %s", __func__);
 
     /* make sure the options are valid */
 
@@ -335,14 +275,13 @@ blackhole_fdw_validator(PG_FUNCTION_ARGS) {
         ereport(ERROR,
             (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
                 errmsg("invalid options"),
-                errhint("Blackhole FDW does not support any options")));
+                errhint("Simple FDW does not support any options")));
 
     PG_RETURN_VOID();
 }
 
-#if (PG_VERSION_NUM >= 90200)
 static void
-blackholeGetForeignRelSize(PlannerInfo *root,
+simpleGetForeignRelSize(PlannerInfo *root,
                            RelOptInfo *baserel,
                            Oid foreigntableid) {
     /*
@@ -361,22 +300,20 @@ blackholeGetForeignRelSize(PlannerInfo *root,
      * possible. The function may also choose to update baserel->width if it
      * can compute a better estimate of the average result row width.
      */
+    SimpleFdwPlanState *plan_state = create_blackhole_fdw_plan_state(root, baserel, foreigntableid);
 
-    BlackholeFdwPlanState *plan_state;
-
-    elog(DEBUG1, "entering function %s", __func__);
-
-    baserel->rows = 0;
-
-    plan_state = palloc0(sizeof(BlackholeFdwPlanState));
-    baserel->fdw_private = (void *) plan_state;
+    elog(NOTICE, "entering function %s", __func__);
 
     /* initialize required state in plan_state */
+    plan_state->open(plan_state);
+    baserel->fdw_private = (void *) plan_state;
+
+    baserel->rows = plan_state->rows;
 }
 
 static void
-blackholeGetForeignPaths(PlannerInfo *root,
-                         RelOptInfo *baserel,
+simpleGetForeignPaths(PlannerInfo *root,
+                         RelOptInfo *rel,
                          Oid foreigntableid) {
     /*
      * Create possible access paths for a scan on a foreign table. This is
@@ -385,68 +322,79 @@ blackholeGetForeignPaths(PlannerInfo *root,
      *
      * This function must generate at least one access path (ForeignPath node)
      * for a scan on the foreign table and must call add_path to add each such
-     * path to baserel->pathlist. It's recommended to use
+     * path to rel->pathlist. It's recommended to use
      * create_foreignscan_path to build the ForeignPath nodes. The function
      * can generate multiple access paths, e.g., a path which has valid
      * pathkeys to represent a pre-sorted result. Each access path must
      * contain cost estimates, and can contain any FDW-private information
      * that is needed to identify the specific scan method intended.
      */
+    SimpleFdwPlanState *plan_state = (SimpleFdwPlanState *) rel->fdw_private;
 
-    /*
-     * BlackholeFdwPlanState *plan_state = baserel->fdw_private;
-     */
+    PathTarget *target = NULL;
+    Cost startup_cost = 0;
+    Cost total_cost = startup_cost + rel->rows;
+    List *pathkeys = NIL;
+    Relids required_outer = NULL;
+    Path *fdw_outerpath = NULL; // extra plan
+    List *fdw_restrictinfo = NIL;
+    List *coptions = NIL;
 
-    Cost startup_cost,
-            total_cost;
+    // const SimpleFdwPlanState *plan_state = rel->fdw_private; ??
 
-    elog(DEBUG1, "entering function %s", __func__);
+    ForeignTable *table = GetForeignTable(foreigntableid);
+    ForeignServer *server = GetForeignServer(table->serverid);
+    ForeignDataWrapper *wrapper = GetForeignDataWrapper(server->fdwid);
+    ForeignPath *path;
 
-    startup_cost = 0;
-    total_cost = startup_cost + baserel->rows;
+
+    elog(NOTICE, "entering function %s", __func__);
+    elog(NOTICE, "wrapper: %s (%d)", wrapper->fdwname, wrapper->fdwid);
+    // wrapper->options;
+    // wrapper->owner;
+
+    // elog(NOTICE, "server: %s (%s) type: %s (%d)", server->servername, server->serverversion, server->servertype, server->fdwid);
+    elog(NOTICE, "server: %s (%d)", server->servername, server->fdwid);
+    // server->options;
+    // server->owner;
+
+    elog(NOTICE, "table:, rel: %d, serverid: %d", table->relid, table->serverid);
+    // table->options;
+
+    // List *to_list = table->options;
+
+    /* TODO - update plan_state with information provided here */
 
     /* Create a ForeignPath node and add it as only possible path */
-    add_path(baserel, (Path *)
-             create_foreignscan_path(root, baserel,
-#if (PG_VERSION_NUM >= 90600)
-                                     NULL, /* default pathtarget */
-#endif
-                                     baserel->rows,
+    path = create_foreignscan_path(
+                 root,
+                 rel,
+                 target,
+                 rel->rows,
 #if (PG_VERSION_NUM >= 180000)
-									 0,         /* no disabled nodes */
+				 0,         /* no disabled nodes */
 #endif
-                                     startup_cost,
-                                     total_cost,
-                                     NIL, /* no pathkeys */
-                                     NULL, /* no outer rel either */
-#if (PG_VERSION_NUM >= 90500)
-                                     NULL, /* no extra plan */
-#endif
+                 startup_cost,
+                 total_cost,
+                 pathkeys,
+                 required_outer,
+                 fdw_outerpath,
 #if (PG_VERSION_NUM >= 170000)
-                                     NIL, /* no fdw_restrictinfo list */
+                 fdw_restrictinfo,
 #endif
-                                     NIL)); /* no fdw_private data */
+                 coptions);
+
+    add_path(rel, (Path *) path);
 }
 
-
-#if (PG_VERSION_NUM < 90500)
 static ForeignScan *
-blackholeGetForeignPlan(PlannerInfo *root,
-						RelOptInfo *baserel,
-						Oid foreigntableid,
-						ForeignPath *best_path,
-						List *tlist,
-						List *scan_clauses)
-#else
-static ForeignScan *
-blackholeGetForeignPlan(PlannerInfo *root,
-                        RelOptInfo *baserel,
+simpleGetForeignPlan(PlannerInfo *root,
+                        RelOptInfo *rel,
                         Oid foreigntableid,
                         ForeignPath *best_path,
                         List *tlist,
-                        List *scan_clauses,
+                        List *restrictinfo_list,
                         Plan *outer_plan)
-#endif
 {
     /*
      * Create a ForeignScan plan node from the selected foreign access path.
@@ -457,14 +405,9 @@ blackholeGetForeignPlan(PlannerInfo *root,
      *
      * This function must create and return a ForeignScan plan node; it's
      * recommended to use make_foreignscan to build the ForeignScan node.
-     *
      */
 
-    /*
-     * BlackholeFdwPlanState *plan_state = baserel->fdw_private;
-     */
-
-    Index scan_relid = baserel->relid;
+    Index		scan_relid = rel->relid;
 
     /*
      * We have no native ability to evaluate restriction clauses, so we just
@@ -474,47 +417,63 @@ blackholeGetForeignPlan(PlannerInfo *root,
      * handled elsewhere).
      */
 
-    elog(DEBUG1, "entering function %s", __func__);
-
-    scan_clauses = extract_actual_clauses(scan_clauses, false);
+    bool pseudocontent = false;
 
     /* Create the ForeignScan node */
-#if(PG_VERSION_NUM < 90500)
-	return make_foreignscan(tlist,
-							scan_clauses,
-							scan_relid,
-							NIL,	/* no expressions to evaluate */
-							NIL);		/* no private state either */
-#else
+    List *fdw_exprs = NIL; // expressions to evaluate
+    List *fdw_private = NIL; // private state
+    List *fdw_scan_tlist = NIL; // custom tlist
+    List *fdw_recheck_quals = NIL; // remote quals
+    List *restrictions = extract_actual_clauses(restrictinfo_list, pseudocontent);
+
+    elog(NOTICE, "entering function %s", __func__);
+
     return make_foreignscan(tlist,
-                            scan_clauses,
+                            restrictions,
                             scan_relid,
-                            NIL, /* no expressions to evaluate */
-                            NIL, /* no private state either */
-                            NIL, /* no custom tlist */
-                            NIL, /* no remote quals */
+                            fdw_exprs,
+                            fdw_private,
+                            fdw_scan_tlist,
+                            fdw_recheck_quals,
                             outer_plan);
-#endif
 }
 
-#else
-
-static FdwPlan *
-blackholePlanForeignScan(Oid foreigntableid, PlannerInfo *root, RelOptInfo *baserel)
+/*
+ * fileExplainForeignScan
+ *		Produce extra output for EXPLAIN
+ */
+/*
+static void
+simpleExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
-	FdwPlan    *fdwplan;
-	fdwplan = makeNode(FdwPlan);
-	fdwplan->fdw_private = NIL;
-	fdwplan->startup_cost = 0;
-	fdwplan->total_cost = 0;
-	return fdwplan;
+    char	   *filename;
+    bool		is_program;
+    List	   *options;
+
+    -- Fetch options --- we only need filename and is_program at this point --
+    fileGetOptions(RelationGetRelid(node->ss.ss_currentRelation),
+                   &filename, &is_program, &options);
+
+    if (is_program)
+        ExplainPropertyText("Foreign Program", filename, es);
+    else
+        ExplainPropertyText("Foreign File", filename, es);
+
+    -- Suppress file size if we're not showing cost details --
+    if (es->costs)
+    {
+        struct stat stat_buf;
+
+        if (!is_program &&
+            stat(filename, &stat_buf) == 0)
+            ExplainPropertyInteger("Foreign File Size", "b",
+                                   (int64) stat_buf.st_size, es);
+    }
 }
-
-#endif
-
+*/
 
 static void
-blackholeBeginForeignScan(ForeignScanState *node,
+simpleBeginForeignScan(ForeignScanState *node,
                           int eflags) {
     /*
      * Begin executing a foreign scan. This is called during executor startup.
@@ -534,16 +493,74 @@ blackholeBeginForeignScan(ForeignScanState *node,
      * ExplainForeignScan and EndForeignScan.
      *
      */
+    ForeignScan *plan = (ForeignScan *) node->ss.ps.plan;
+    char	   *filename;
+    bool		is_program;
+    List	   *options;
+    CopyFromState cstate;
+    // FileFdwExecutionState *festate;
 
-    BlackholeFdwScanState *scan_state = palloc0(sizeof(BlackholeFdwScanState));
+    /*
+     * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
+     */
+    if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+        return;
+
+    /* Fetch options of foreign table */
+//    fileGetOptions(RelationGetRelid(node->ss.ss_currentRelation),
+//                   &filename, &is_program, &options);
+
+    /* Add any options from the plan (currently only convert_selectively) */
+    options = list_concat(options, plan->fdw_private);
+
+    /*
+     * Create CopyState from FDW options.  We always acquire all columns, so
+     * as to match the expected ScanTupleSlot signature.
+     */
+    /*
+    cstate = BeginCopyFrom(NULL,
+                           node->ss.ss_currentRelation,
+                           NULL,
+                           filename,
+                           is_program,
+                           NULL,
+                           NIL,
+                           options);
+                           */
+
+
+    const SimpleFdwPlanState *plan_state = NULL;
+
+    SimpleFdwScanState *scan_state = create_blackhole_fdw_scan_state(node, eflags);
+
+    elog(NOTICE, "entering function %s", __func__);
+
     node->fdw_state = scan_state;
 
-    elog(DEBUG1, "entering function %s", __func__);
+    scan_state->open(scan_state);
+
+    if (eflags & EXEC_FLAG_EXPLAIN_ONLY) {
+
+    }
+
+    /*
+     * Save state in node->fdw_state.  We must save enough information to call
+     * BeginCopyFrom() again.
+     */
+    /*
+    festate = (FileFdwExecutionState *) palloc(sizeof(FileFdwExecutionState));
+    festate->filename = filename;
+    festate->is_program = is_program;
+    festate->options = options;
+    festate->cstate = cstate;
+
+    node->fdw_state = festate;
+    */
 }
 
 
 static TupleTableSlot *
-blackholeIterateForeignScan(ForeignScanState *node) {
+simpleIterateForeignScan(ForeignScanState *node) {
     /*
      * Fetch one row from the foreign source, returning it in a tuple table
      * slot (the node's ScanTupleSlot should be used for this purpose). Return
@@ -568,20 +585,26 @@ blackholeIterateForeignScan(ForeignScanState *node) {
      * (just as you would need to do in the case of a data type mismatch).
      */
 
-
-    /* ----
-     * BlackholeFdwScanState *scan_state =
-     *	 (BlackholeFdwScanState *) node->fdw_state;
-     * ----
-     */
-
+    SimpleFdwScanState *scan_state = (SimpleFdwScanState *) node->fdw_state;
     TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 
-    elog(DEBUG1, "entering function %s", __func__);
+    elog(NOTICE, "entering function %s", __func__);
 
+    /*
+     * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
+     */
+    if (node->fdw_state == NULL) {
+        return;
+    }
+
+
+    /* get the current slot and clear it */
     ExecClearTuple(slot);
 
     /* get the next record, if any, and fill in the slot */
+    scan_state->next(scan_state);
+
+    // populate slot
 
     /* then return the slot */
     return slot;
@@ -589,49 +612,53 @@ blackholeIterateForeignScan(ForeignScanState *node) {
 
 
 static void
-blackholeReScanForeignScan(ForeignScanState *node) {
+simpleReScanForeignScan(ForeignScanState *node) {
     /*
      * Restart the scan from the beginning. Note that any parameters the scan
      * depends on may have changed value, so the new scan does not necessarily
      * return exactly the same rows.
      */
 
-    /* ----
-     * BlackholeFdwScanState *scan_state =
-     *	 (BlackholeFdwScanState *) node->fdw_state;
-     * ----
-     */
+    SimpleFdwScanState *scan_state = (SimpleFdwScanState *) node->fdw_state;
 
-    elog(DEBUG1, "entering function %s", __func__);
+    scan_state->reset(scan_state);
+
+    elog(NOTICE, "entering function %s", __func__);
 }
 
 
 static void
-blackholeEndForeignScan(ForeignScanState *node) {
+simpleEndForeignScan(ForeignScanState *node) {
     /*
      * End the scan and release resources. It is normally not important to
      * release palloc'd memory, but for example open files and connections to
      * remote servers should be cleaned up.
      */
 
-    /* ----
-     * BlackholeFdwScanState *scan_state =
-     *	 (BlackholeFdwScanState *) node->fdw_state;
-     * ----
-     */
+    SimpleFdwScanState *scan_state = (SimpleFdwScanState *) node->fdw_state;
 
-    elog(DEBUG1, "entering function %s", __func__);
+    /*
+     * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
+     */
+    if (node->fdw_state == NULL) {
+        return;
+    }
+
+
+    elog(NOTICE, "entering function %s", __func__);
+
+    scan_state->close(scan_state);
+    pfree(scan_state);
 }
 
 
-#if (PG_VERSION_NUM >= 90300)
 static void
-blackholeAddForeignUpdateTargets(
+simpleAddForeignUpdateTargets(
 #if (PG_VERSION_NUM >= 140000)
     PlannerInfo *root,
     Index rtindex,
 #else
-	                             Query *parsetree,
+    Query *parsetree,
 #endif
     RangeTblEntry *target_rte,
     Relation target_relation) {
@@ -667,7 +694,7 @@ blackholeAddForeignUpdateTargets(
 
 
 static List *
-blackholePlanForeignModify(PlannerInfo *root,
+simplePlanForeignModify(PlannerInfo *root,
                            ModifyTable *plan,
                            Index resultRelation,
                            int subplan_index) {
@@ -698,7 +725,7 @@ blackholePlanForeignModify(PlannerInfo *root,
 
 
 static void
-blackholeBeginForeignModify(ModifyTableState *mtstate,
+simpleBeginForeignModify(ModifyTableState *mtstate,
                             ResultRelInfo *rinfo,
                             List *fdw_private,
                             int subplan_index,
@@ -729,16 +756,15 @@ blackholeBeginForeignModify(ModifyTableState *mtstate,
      * during executor startup.
      */
 
-    BlackholeFdwModifyState *modify_state =
-            palloc0(sizeof(BlackholeFdwModifyState));
-    rinfo->ri_FdwState = modify_state;
+    // SimpleFdwModifyState *modify_state = simpleFdwOps->create_simple_fdw_modify_state();
+    // rinfo->ri_FdwState = modify_state;
 
     elog(DEBUG1, "entering function %s", __func__);
 }
 
 
 static TupleTableSlot *
-blackholeExecForeignInsert(EState *estate,
+simpleExecForeignInsert(EState *estate,
                            ResultRelInfo *rinfo,
                            TupleTableSlot *slot,
                            TupleTableSlot *planSlot) {
@@ -770,8 +796,8 @@ blackholeExecForeignInsert(EState *estate,
      */
 
     /* ----
-     * BlackholeFdwModifyState *modify_state =
-     *	 (BlackholeFdwModifyState *) rinfo->ri_FdwState;
+     * SimpleFdwModifyState *modify_state =
+     *	 (SimpleFdwModifyState *) rinfo->ri_FdwState;
      * ----
      */
 
@@ -782,7 +808,7 @@ blackholeExecForeignInsert(EState *estate,
 
 
 static TupleTableSlot *
-blackholeExecForeignUpdate(EState *estate,
+simpleExecForeignUpdate(EState *estate,
                            ResultRelInfo *rinfo,
                            TupleTableSlot *slot,
                            TupleTableSlot *planSlot) {
@@ -814,8 +840,8 @@ blackholeExecForeignUpdate(EState *estate,
      */
 
     /* ----
-     * BlackholeFdwModifyState *modify_state =
-     *	 (BlackholeFdwModifyState *) rinfo->ri_FdwState;
+     * SimpleFdwModifyState *modify_state =
+     *	 (SimpleFdwModifyState *) rinfo->ri_FdwState;
      * ----
      */
 
@@ -826,7 +852,7 @@ blackholeExecForeignUpdate(EState *estate,
 
 
 static TupleTableSlot *
-blackholeExecForeignDelete(EState *estate,
+simpleExecForeignDelete(EState *estate,
                            ResultRelInfo *rinfo,
                            TupleTableSlot *slot,
                            TupleTableSlot *planSlot) {
@@ -855,8 +881,8 @@ blackholeExecForeignDelete(EState *estate,
      */
 
     /* ----
-     * BlackholeFdwModifyState *modify_state =
-     *	 (BlackholeFdwModifyState *) rinfo->ri_FdwState;
+     * SimpleFdwModifyState *modify_state =
+     *	 (SimpleFdwModifyState *) rinfo->ri_FdwState;
      * ----
      */
 
@@ -867,7 +893,7 @@ blackholeExecForeignDelete(EState *estate,
 
 
 static void
-blackholeEndForeignModify(EState *estate,
+simpleEndForeignModify(EState *estate,
                           ResultRelInfo *rinfo) {
     /*
      * End the table update and release resources. It is normally not
@@ -879,8 +905,8 @@ blackholeEndForeignModify(EState *estate,
      */
 
     /* ----
-     * BlackholeFdwModifyState *modify_state =
-     *	 (BlackholeFdwModifyState *) rinfo->ri_FdwState;
+     * SimpleFdwModifyState *modify_state =
+     *	 (SimpleFdwModifyState *) rinfo->ri_FdwState;
      * ----
      */
 
@@ -888,7 +914,7 @@ blackholeEndForeignModify(EState *estate,
 }
 
 static int
-blackholeIsForeignRelUpdatable(Relation rel) {
+simpleIsForeignRelUpdatable(Relation rel) {
     /*
      * Report which update operations the specified foreign table supports.
      * The return value should be a bit mask of rule event numbers indicating
@@ -910,11 +936,10 @@ blackholeIsForeignRelUpdatable(Relation rel) {
 
     return (1 << CMD_UPDATE) | (1 << CMD_INSERT) | (1 << CMD_DELETE);
 }
-#endif
 
 
 static void
-blackholeExplainForeignScan(ForeignScanState *node,
+simpleExplainForeignScan(ForeignScanState *node,
                             struct ExplainState *es) {
     /*
      * Print additional EXPLAIN output for a foreign table scan. This function
@@ -931,9 +956,8 @@ blackholeExplainForeignScan(ForeignScanState *node,
 }
 
 
-#if (PG_VERSION_NUM >= 90300)
 static void
-blackholeExplainForeignModify(ModifyTableState *mtstate,
+simpleExplainForeignModify(ModifyTableState *mtstate,
                               ResultRelInfo *rinfo,
                               List *fdw_private,
                               int subplan_index,
@@ -951,19 +975,17 @@ blackholeExplainForeignModify(ModifyTableState *mtstate,
      */
 
     /* ----
-     * BlackholeFdwModifyState *modify_state =
-     *	 (BlackholeFdwModifyState *) rinfo->ri_FdwState;
+     * SimpleFdwModifyState *modify_state =
+     *	 (SimpleFdwModifyState *) rinfo->ri_FdwState;
      * ----
      */
 
     elog(DEBUG1, "entering function %s", __func__);
 }
-#endif
 
 
-#if (PG_VERSION_NUM >= 90200)
 static bool
-blackholeAnalyzeForeignTable(Relation relation,
+simpleAnalyzeForeignTable(Relation relation,
                              AcquireSampleRowsFunc *func,
                              BlockNumber *totalpages) {
     /* ----
@@ -997,12 +1019,9 @@ blackholeAnalyzeForeignTable(Relation relation,
 
     return false;
 }
-#endif
 
-
-#if (PG_VERSION_NUM >= 90500)
 static void
-blackholeGetForeignJoinPaths(PlannerInfo *root,
+simpleGetForeignJoinPaths(PlannerInfo *root,
                              RelOptInfo *joinrel,
                              RelOptInfo *outerrel,
                              RelOptInfo *innerrel,
@@ -1043,7 +1062,7 @@ blackholeGetForeignJoinPaths(PlannerInfo *root,
 
 
 static RowMarkType
-blackholeGetForeignRowMarkType(RangeTblEntry *rte,
+simpleGetForeignRowMarkType(RangeTblEntry *rte,
                                LockClauseStrength strength) {
     /*
      * Report which row-marking option to use for a foreign table. rte is the
@@ -1066,14 +1085,14 @@ blackholeGetForeignRowMarkType(RangeTblEntry *rte,
 }
 
 #if (PG_VERSION_NUM >= 120000)
-static void blackholeRefetchForeignRow(EState *estate,
+static void simpleRefetchForeignRow(EState *estate,
                                        ExecRowMark *erm,
                                        Datum rowid,
                                        TupleTableSlot *slot,
                                        bool *updated)
 #else
 static HeapTuple
-blackholeRefetchForeignRow(EState *estate,
+simpleRefetchForeignRow(EState *estate,
 						   ExecRowMark *erm,
 						   Datum rowid,
 						   bool *updated)
@@ -1120,7 +1139,7 @@ blackholeRefetchForeignRow(EState *estate,
 
 
 static List *
-blackholeImportForeignSchema(ImportForeignSchemaStmt *stmt,
+simpleImportForeignSchema(ImportForeignSchemaStmt *stmt,
                              Oid serverOid) {
     /*
      * Obtain a list of foreign table creation commands. This function is
@@ -1160,5 +1179,3 @@ blackholeImportForeignSchema(ImportForeignSchemaStmt *stmt,
 
     return NULL;
 }
-
-#endif
